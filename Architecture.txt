@@ -1,0 +1,26 @@
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    HMI 8 Go RAM                                        │
+│                                                                                        │
+│  [ DOCKER CONTAINER 1 : CHERCHEUR ]         [ DOCKER CONTAINER 2 : RÉDACTEUR ]         │
+│  ┌──────────────────────────────┐           ┌──────────────────────────────┐           │
+│  │ llama-server (Port 8081)     │           │ llama-server (Port 8080)     │           │
+│  │ Snowflake-Arctic Embed GGUF  │           │ Qwen 2.5 3B Instruct GGUF    │           │
+│  │ (Mode: --embedding)          │           │ (Mode: Chat / Generation)    │           │
+│  │ RAM: ~200 Mo                 │           │ RAM: ~2.0 Go                 │           │
+│  └──────────────┬───────────────┘           └──────────────▲───────────────┘           │
+│                 │                                          │                           │
+│                 │ (1) Génère                               │ (4) Envoie Prompt         │
+│                 │     Vecteurs                             │     "Question + Extraits" │
+│                 ▼                                          │                           │
+│  ┌──────────────────────────────┐                          │                           │
+│  │ SCRIPT BACKEND (Python / HMI)├──────────────────────────┘                           │
+│  └──────────────┬───────────────┘                                                      │
+│                 │                                                                      │
+│                 │ (2) Stocke & (3) Cherche                                             │
+│                 ▼                                                                      │
+│  ┌──────────────────────────────┐                                                      │
+│  │ BASE VECTORIELLE LOCALE      │                                                      │
+│  │ (FAISS / ChromaDB)           │                                                      │
+│  │ Contient : Texte + Vecteurs  │                                                      │
+│  └──────────────────────────────┘                                                      │
+└────────────────────────────────────────────────────────────────────────────────────────┘

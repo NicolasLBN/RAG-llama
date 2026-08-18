@@ -1,0 +1,67 @@
+1. Fonctionnement concret de llama-serverllama-server est une application C++ qui charge un fichier modèle .gguf en mémoire RAM/VRAM et expose un serveur HTTP compatible avec l'API d'OpenAI. Selon l'option activée au lancement (--embedding ou non), il fonctionne selon deux modes :Mode Embedding (--embedding) : Il prend du texte en entrée et le transforme en un vecteur numérique (une liste de 768 à 1024 nombres). Ce vecteur représente le sens sémantique de la phrase dans un espace mathématique.Mode Génération / Chat (par défaut) : Il prend un prompt ou une conversation en entrée et génère du texte mot par mot (ex: réponses de chatbot).2. À quoi servent ces vecteurs (Embeddings) ?Un vecteur d'embedding permet de calculer la proximité sémantique entre deux textes grâce à la distance mathématique (similarité cosinus). Deux phrases ayant un sens similaire auront des vecteurs très proches, même si les mots utilisés sont complètement différents.Exemple concret :"La machine ne s'allume pas" $\rightarrow$ [0.12, -0.45, 0.88, ...]"Problème d'alimentation électrique" $\rightarrow$ [0.11, -0.42, 0.85, ...]"Faire cuire un gâteau au chocolat" $\rightarrow$ [-0.88, 0.12, -0.34, ...]Les deux premières phrases génèrent des vecteurs quasiment identiques, alors que la troisième est très distante.Comment les utiliser dans votre projet HMI ?Dans votre système RAG, ces vecteurs servent de moteur de recherche intelligent :Vous découpez vos manuels utilisateurs de 20 pages en petits paragraphes.Vous passez chaque paragraphe dans llama-server (avec le modèle snowflake-arctic-embed) pour obtenir son vecteur, puis vous stockez ces vecteurs dans une base de données localement (ex: FAISS ou ChromaDB).Quand un opérateur tape une question sur l'HMI (ex: "Code erreur E04"), vous convertissez sa question en vecteur et retrouvez en quelques millisecondes le paragraphe du manuel le plus proche.3. Faut-il entraîner votre modèle ?Non, vous n'avez pas besoin d'entraîner ou de fine-tuner le modèle.Le modèle d'embedding (snowflake-arctic-embed-m-v2.0) sait déjà transformer n'importe quel texte français ou technique en vecteur sans aucun entraînement supplémentaire.Pour ajouter vos manuels utilisateurs, il suffit d'effectuer une indexation (vectorisation) de vos PDF, ce qui prend quelques secondes. Si un manuel change, vous remplacez simplement les vecteurs dans la base de données.
+
+Qu'est-ce que la notion de RAG ?
+Le RAG (Retrieval-Augmented Generation ou Génération Accentuée par Récupération) est une technique qui permet d'associer un modèle de langage (LLM) à un moteur de recherche documentaire.
+
+Au lieu de compter uniquement sur les connaissances mémorisées par l'IA lors de son entraînement, le RAG lui donne accès à une "bibliothèque" de documents externes (vos manuels utilisateur, procédures, PDF) dans laquelle elle vient chercher l'information exacte avant de vous répondre.
+
+Le fonctionnement du RAG en 3 étapes clés
+Extraction / Recherche (Retrieval) : Quand l'utilisateur pose une question, le système cherche dans vos fichiers les passages ou paragraphes les plus pertinents.
+
+Augmentation (Augmentation) : Le système injecte le texte de ces paragraphes trouvés directement dans la consigne (prompt) destinée à l'IA.
+
+Génération (Generation) : Le LLM lit les paragraphes fournis et rédige une réponse précise, claire et sans invention (hallucination).
+
+"Pour entraîner mon IA, puis-je passer en mode texte plutôt qu'embedding ?"
+Pour répondre clairement à votre question : Le mode texte et le mode embedding ne s'opposent pas, ils travaillent ensemble.
+
+Vous ne pouvez pas faire une recherche d'information efficace uniquement avec du texte brut, car les ordinateurs et les LLM ne savent pas comparer la "ressemblance" de deux textes sans passer par des embeddings.
+
+Pourquoi la recherche en texte brut ne fonctionne pas bien
+Si vous cherchez directement du texte brut (type recherche par mots-clés comme sur un ancien moteur de recherche) :
+
+Si l'utilisateur demande "Comment redémarrer la machine ?", mais que le manuel écrit "Procédure de réinitialisation du système", la recherche texte ne trouvera rien car les mots exacts ne correspondent pas.
+
+Le rôle complémentaire des Embeddings et du Texte
+L'Embedding sert à CHERCHER : Il convertit vos paragraphes de texte en vecteurs numériques. Il permet à l'ordinateur de comprendre que "redémarrer" et "réinitialiser" veulent dire la même chose. C'est grâce à lui que le système trouve le bon passage dans le manuel en quelques millisecondes.
+
+Le Texte brut sert à RÉPONDRE : Une fois que l'embedding a permis d'isoler le paragraphe de 5 lignes qui contient la solution, c'est le texte brut de ce paragraphe qui est envoyé au modèle de génération (ex: Qwen ou Llama). Le modèle lit le texte en français et rédige la réponse finale pour l'utilisateur.
+
+========================================================================================
+ÉTAPE 1 : PRÉPARATION DE LA BASE DE CONNAISSANCES (À FAIRE UNE SEULE FOIS)
+========================================================================================
+
+ [ PDF Manuels (20 p)] ───► [ Découpage en ] ───► POST /v1/embeddings ───► [ Base Vectorielle ]
+                             [ Paragraphes ]       (llama-server Embed)     (FAISS / Chroma)
+                                                            │                     │
+                                                            ▼                     ▼
+                                                 [ Vecteur de 768 dim ] ──► [ Stockage ]
+
+
+========================================================================================
+ÉTAPE 2 : REQUÊTE UTILISATEUR SUR L'HMI (EN TEMPS RÉEL)
+========================================================================================
+
+ [ Opérateur HMI ]
+        │
+        │ 1. Question: "Comment réinitialiser la pompe ?"
+        ▼
+ POST /v1/embeddings (llama-server Embed)
+        │
+        │ 2. Retourne le vecteur de la question
+        ▼
+ [ Base Vectorielle ]
+        │
+        │ 3. Recherche de similarité cosinus
+        │ 4. Extrait le paragraphe exact : "Pour réinitialiser la pompe, appuyer 5s sur RESET..."
+        ▼
+ [ Prompt Assemblé ] :
+ "Tu es un assistant. Réponds à la question avec ce paragraphe : [Paragraphe extrait]"
+        │
+        │ 5. POST /v1/chat/completions
+        ▼
+ [ llama-server LLM (ex: Qwen2.5-3B) ]
+        │
+        │ 6. Génère la réponse rédigée
+        ▼
+ [ Écran HMI ] : "Pour réinitialiser la pompe, maintenez le bouton RESET enfoncé pendant 5 secondes."
