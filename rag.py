@@ -44,8 +44,15 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item["embedding"] for item in items]
 
 
+def enrich_query(question: str) -> str:
+    cleaned = " ".join(question.split())
+    if "optijet" not in cleaned.lower():
+        cleaned = f"{cleaned} machine OPTIJET"
+    return f"query: {cleaned}"
+
+
 def embed_query(question: str) -> list[float]:
-    return embed_texts([f"query: {question}"])[0]
+    return embed_texts([enrich_query(question)])[0]
 
 
 def open_collection(reset: bool = False) -> chromadb.Collection:
@@ -61,31 +68,52 @@ def open_collection(reset: bool = False) -> chromadb.Collection:
     )
 
 
-def search_chunks(question: str, n_results: int = 3) -> list[dict]:
+def search_chunks(
+    question: str,
+    n_results: int = 5,
+    lang: str = "fr",
+    max_distance: float = 0.55,
+    fetch_k: int = 12,
+) -> list[dict]:
     collection = open_collection()
     if collection.count() == 0:
         raise RuntimeError("La base est vide. Lance d'abord: python ingest.py")
-    query_embedding = embed_query(question)
-    result = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),
-        include=["documents", "metadatas", "distances"],
-    )
+
+    query_kwargs: dict = {
+        "query_embeddings": [embed_query(question)],
+        "n_results": min(fetch_k, collection.count()),
+        "include": ["documents", "metadatas", "distances"],
+    }
+    if lang and lang != "all":
+        query_kwargs["where"] = {"lang": lang}
+
+    try:
+        result = collection.query(**query_kwargs)
+    except Exception:
+        result = collection.query(
+            query_embeddings=query_kwargs["query_embeddings"],
+            n_results=query_kwargs["n_results"],
+            include=query_kwargs["include"],
+        )
+
     hits = []
-    for doc, meta, distance in zip(
-        result["documents"][0],
-        result["metadatas"][0],
-        result["distances"][0],
-    ):
+    documents = result.get("documents") or [[]]
+    metadatas = result.get("metadatas") or [[]]
+    distances = result.get("distances") or [[]]
+    for doc, meta, distance in zip(documents[0], metadatas[0], distances[0]):
+        meta = meta or {}
         hits.append(
             {
                 "text": doc,
                 "source": meta.get("source", ""),
                 "page": meta.get("page", 0),
+                "lang": meta.get("lang", ""),
                 "distance": distance,
             }
         )
-    return hits
+
+    filtered = [hit for hit in hits if hit["distance"] <= max_distance]
+    return (filtered or hits[:1])[:n_results]
 
 
 def ask_chat(question: str, excerpts: list[dict]) -> str:

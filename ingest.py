@@ -1,81 +1,143 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import re
 from pathlib import Path
 
-from pypdf import PdfReader
+import pymupdf
 
 from rag import CHROMA_DIR, HEALTH_EMBED, ROOT, embed_texts, open_collection, wait_for
 
 PDF_DIR = ROOT / "pdf"
-MIN_CHARS = 300
-MAX_CHARS = 500
-OVERLAP = 50
+MIN_CHARS = 200
+TARGET_MIN = 500
+MAX_CHARS = 900
+OVERLAP = 120
 BATCH_SIZE = 8
+
+HEADING_NUM = re.compile(r"^\d+(?:\.\d+){0,3}[\.\)]?\s+\S")
+
+
+def detect_lang(pdf_path: Path) -> str:
+    name = pdf_path.name.lower()
+    if "-fr-" in name:
+        return "fr"
+    if "-en-" in name:
+        return "en"
+    return "unknown"
 
 
 def normalize_text(text: str) -> str:
     text = text.replace("\x00", " ")
+    text = text.replace("\u00ad", "")
+    text = re.sub(r"(?<=\w)-\n(?=\w)", "", text)
+    text = text.replace("\r", "")
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
-def split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[\.\!\?\:;])\s+", text)
-    return [part.strip() for part in parts if part.strip()]
+def is_heading(line: str) -> bool:
+    line = line.strip()
+    if len(line) < 4 or len(line) > 90:
+        return False
+    if HEADING_NUM.match(line):
+        return True
+    letters = [c for c in line if c.isalpha()]
+    if len(letters) >= 6 and sum(c.isupper() for c in letters) / len(letters) >= 0.75:
+        return True
+    return False
 
 
-def chunk_text(text: str) -> list[str]:
-    text = normalize_text(text)
-    if not text:
-        return []
+def split_paragraphs(text: str) -> list[tuple[str, str]]:
+    lines = [line.strip() for line in text.splitlines()]
+    heading = ""
+    paragraphs: list[tuple[str, str]] = []
+    buf: list[str] = []
 
-    sentences = split_sentences(text) or [text]
+    def flush() -> None:
+        body = " ".join(buf).strip()
+        buf.clear()
+        if body:
+            paragraphs.append((heading, body))
+
+    for line in lines:
+        if not line:
+            flush()
+            continue
+        if is_heading(line):
+            flush()
+            heading = line
+            continue
+        buf.append(line)
+    flush()
+    return paragraphs
+
+
+def pack_chunks(paragraphs: list[tuple[str, str]]) -> list[str]:
     chunks: list[str] = []
+    current_heading = ""
     current = ""
 
-    for sentence in sentences:
-        candidate = f"{current} {sentence}".strip() if current else sentence
-        if len(candidate) <= MAX_CHARS:
+    def with_heading(body: str, heading: str) -> str:
+        body = body.strip()
+        if heading and not body.startswith(heading):
+            return f"{heading}\n{body}"
+        return body
+
+    for heading, para in paragraphs:
+        if heading != current_heading and current:
+            chunks.append(with_heading(current, current_heading))
+            overlap = current[-OVERLAP:].strip() if len(current) > OVERLAP else ""
+            current = overlap
+            current_heading = heading
+        elif heading:
+            current_heading = heading
+
+        candidate = f"{current} {para}".strip() if current else para
+        if len(with_heading(candidate, current_heading)) <= MAX_CHARS:
             current = candidate
             continue
+
         if current:
-            chunks.append(current)
-            overlap = current[-OVERLAP:] if len(current) > OVERLAP else current
-            current = f"{overlap} {sentence}".strip()
-            if len(current) > MAX_CHARS:
-                current = sentence[:MAX_CHARS]
+            chunks.append(with_heading(current, current_heading))
+            overlap = current[-OVERLAP:].strip() if len(current) > OVERLAP else ""
+            current = f"{overlap} {para}".strip()
+            if len(with_heading(current, current_heading)) > MAX_CHARS:
+                current = para[:MAX_CHARS]
         else:
-            chunks.append(sentence[:MAX_CHARS])
+            chunks.append(with_heading(para[:MAX_CHARS], current_heading))
             current = ""
 
     if current:
-        chunks.append(current)
+        chunks.append(with_heading(current, current_heading))
 
     merged: list[str] = []
     for chunk in chunks:
-        if merged and len(merged[-1]) < MIN_CHARS and len(merged[-1]) + 1 + len(chunk) <= MAX_CHARS:
-            merged[-1] = f"{merged[-1]} {chunk}".strip()
+        if merged and len(merged[-1]) < TARGET_MIN and len(merged[-1]) + 1 + len(chunk) <= MAX_CHARS:
+            merged[-1] = f"{merged[-1]}\n{chunk}".strip()
         else:
             merged.append(chunk)
-    return [chunk for chunk in merged if len(chunk) >= 40]
+    return [chunk for chunk in merged if len(chunk) >= MIN_CHARS]
 
 
 def extract_pdf_chunks(pdf_path: Path) -> list[dict]:
-    reader = PdfReader(str(pdf_path))
+    lang = detect_lang(pdf_path)
     records = []
-    for page_index, page in enumerate(reader.pages, start=1):
-        page_text = page.extract_text() or ""
-        for chunk in chunk_text(page_text):
-            records.append(
-                {
-                    "text": chunk,
-                    "source": pdf_path.name,
-                    "page": page_index,
-                }
-            )
+    with pymupdf.open(pdf_path) as doc:
+        for page_index, page in enumerate(doc, start=1):
+            page_text = normalize_text(page.get_text("text") or "")
+            for chunk in pack_chunks(split_paragraphs(page_text)):
+                records.append(
+                    {
+                        "text": chunk,
+                        "source": pdf_path.name,
+                        "page": page_index,
+                        "lang": lang,
+                    }
+                )
     return records
 
 
@@ -85,9 +147,20 @@ def chunk_id(record: dict) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Indexe les manuels PDF dans ChromaDB.")
+    parser.add_argument(
+        "--lang",
+        default="fr",
+        choices=["fr", "en", "all"],
+        help="Langue des PDF a indexer (defaut: fr)",
+    )
+    args = parser.parse_args()
+
     pdfs = sorted(PDF_DIR.glob("*.pdf"))
+    if args.lang != "all":
+        pdfs = [pdf for pdf in pdfs if detect_lang(pdf) == args.lang]
     if not pdfs:
-        raise SystemExit(f"Aucun PDF trouve dans {PDF_DIR}")
+        raise SystemExit(f"Aucun PDF {args.lang} trouve dans {PDF_DIR}")
 
     print(f"Attente de llama-embed sur {HEALTH_EMBED} ...")
     wait_for(HEALTH_EMBED, "llama-embed")
@@ -95,7 +168,7 @@ def main() -> None:
     records: list[dict] = []
     for pdf in pdfs:
         chunks = extract_pdf_chunks(pdf)
-        print(f"{pdf.name}: {len(chunks)} blocs")
+        print(f"{pdf.name} [{detect_lang(pdf)}]: {len(chunks)} blocs")
         records.extend(chunks)
 
     if not records:
@@ -111,7 +184,11 @@ def main() -> None:
             documents=[item["text"] for item in batch],
             embeddings=embeddings,
             metadatas=[
-                {"source": item["source"], "page": item["page"]}
+                {
+                    "source": item["source"],
+                    "page": item["page"],
+                    "lang": item["lang"],
+                }
                 for item in batch
             ],
         )
