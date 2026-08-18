@@ -11,12 +11,12 @@ def main() -> None:
         description="Pose une question a l'assistant technique OPTIJET."
     )
     parser.add_argument("question", nargs="+", help="Question de l'operateur")
-    parser.add_argument("--top", type=int, default=5, help="Nombre d'extraits a recuperer")
+    parser.add_argument("--top", type=int, default=3, help="Nombre d'extraits a recuperer")
     parser.add_argument("--lang", default="fr", choices=["fr", "en", "all"])
     parser.add_argument(
         "--max-distance",
         type=float,
-        default=0.55,
+        default=0.75,
         help="Ignore les extraits au-dessus de ce seuil cosinus",
     )
     args = parser.parse_args()
@@ -39,8 +39,11 @@ def main() -> None:
     for index, hit in enumerate(hits, start=1):
         print(
             f"\n[{index}] {hit['source']} p.{hit['page']} "
-            f"(distance={hit['distance']:.4f}, lang={hit.get('lang', '')})"
+            f"(score={hit.get('score', 0):.3f}, distance={hit['distance']:.4f}, "
+            f"lex={hit.get('lexical', 0):.1f})"
         )
+        if hit.get("heading"):
+            print(f"Section: {hit['heading']}")
         print(hit["text"])
 
     print("\n--- Reponse ---")

@@ -10,13 +10,16 @@ import pymupdf
 from rag import CHROMA_DIR, HEALTH_EMBED, ROOT, embed_texts, open_collection, wait_for
 
 PDF_DIR = ROOT / "pdf"
-MIN_CHARS = 200
-TARGET_MIN = 500
+MIN_CHARS = 50
 MAX_CHARS = 900
-OVERLAP = 120
 BATCH_SIZE = 8
 
-HEADING_NUM = re.compile(r"^\d+(?:\.\d+){0,3}[\.\)]?\s+\S")
+SECTION_NUM_ONLY = re.compile(r"^\d+(?:\.\d+){1,3}\.?$")
+SECTION_WITH_TITLE = re.compile(r"^(\d+\.\d+(?:\.\d+)*)\s+(\S.{2,90})$")
+CHAPTER = re.compile(r"^(\d+)\s+([A-ZÉÈÀÂÊÎÔÛÄËÏÖÜ].{3,80})$")
+SPECIAL_HEADING = re.compile(r"^(NOTE|DANGER|ATTENTION|IMPORTANT|WARNING)[\s!:.]*$", re.I)
+TOC_DOTS = re.compile(r"\.{4,}")
+PAGE_MARK = re.compile(r"^\d+\s*/\s*\d+$")
 
 
 def detect_lang(pdf_path: Path) -> str:
@@ -26,6 +29,17 @@ def detect_lang(pdf_path: Path) -> str:
     if "-en-" in name:
         return "en"
     return "unknown"
+
+
+def detect_doc_type(pdf_path: Path) -> str:
+    name = pdf_path.name.lower()
+    if "guide rapide" in name:
+        return "quick_guide"
+    if "profiling" in name:
+        return "profiling"
+    if "entretien" in name or "user guide" in name:
+        return "manual"
+    return "other"
 
 
 def normalize_text(text: str) -> str:
@@ -39,33 +53,58 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-def is_heading(line: str) -> bool:
-    line = line.strip()
-    if len(line) < 4 or len(line) > 90:
-        return False
-    if HEADING_NUM.match(line):
+def is_noise(line: str) -> bool:
+    if not line:
         return True
-    letters = [c for c in line if c.isalpha()]
-    if len(letters) >= 6 and sum(c.isupper() for c in letters) / len(letters) >= 0.75:
+    if PAGE_MARK.match(line):
+        return True
+    if TOC_DOTS.search(line):
+        return True
+    if re.fullmatch(r"[\d\s]+", line):
         return True
     return False
 
 
-def split_paragraphs(text: str) -> list[tuple[str, str]]:
-    lines = [line.strip() for line in text.splitlines()]
+def is_heading(line: str) -> bool:
+    if SPECIAL_HEADING.match(line):
+        return True
+    if SECTION_WITH_TITLE.match(line):
+        return True
+    if CHAPTER.match(line) and len(line) <= 80:
+        return True
+    return False
+
+
+def merge_split_headings(lines: list[str]) -> list[str]:
+    merged: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if SECTION_NUM_ONLY.match(line) and index + 1 < len(lines):
+            nxt = lines[index + 1]
+            if not is_noise(nxt) and not SECTION_NUM_ONLY.match(nxt):
+                merged.append(f"{line} {nxt}")
+                index += 2
+                continue
+        merged.append(line)
+        index += 1
+    return merged
+
+
+def split_sections(text: str) -> list[tuple[str, str]]:
     heading = ""
-    paragraphs: list[tuple[str, str]] = []
+    sections: list[tuple[str, str]] = []
     buf: list[str] = []
 
     def flush() -> None:
         body = " ".join(buf).strip()
         buf.clear()
-        if body:
-            paragraphs.append((heading, body))
+        if heading or body:
+            sections.append((heading, body))
 
+    lines = merge_split_headings([line.strip() for line in text.splitlines()])
     for line in lines:
-        if not line:
-            flush()
+        if is_noise(line):
             continue
         if is_heading(line):
             flush()
@@ -73,71 +112,49 @@ def split_paragraphs(text: str) -> list[tuple[str, str]]:
             continue
         buf.append(line)
     flush()
-    return paragraphs
+    return [(h, b) for h, b in sections if (h + " " + b).strip()]
 
 
-def pack_chunks(paragraphs: list[tuple[str, str]]) -> list[str]:
-    chunks: list[str] = []
-    current_heading = ""
-    current = ""
-
-    def with_heading(body: str, heading: str) -> str:
-        body = body.strip()
-        if heading and not body.startswith(heading):
-            return f"{heading}\n{body}"
-        return body
-
-    for heading, para in paragraphs:
-        if heading != current_heading and current:
-            chunks.append(with_heading(current, current_heading))
-            overlap = current[-OVERLAP:].strip() if len(current) > OVERLAP else ""
-            current = overlap
-            current_heading = heading
-        elif heading:
-            current_heading = heading
-
-        candidate = f"{current} {para}".strip() if current else para
-        if len(with_heading(candidate, current_heading)) <= MAX_CHARS:
-            current = candidate
-            continue
-
-        if current:
-            chunks.append(with_heading(current, current_heading))
-            overlap = current[-OVERLAP:].strip() if len(current) > OVERLAP else ""
-            current = f"{overlap} {para}".strip()
-            if len(with_heading(current, current_heading)) > MAX_CHARS:
-                current = para[:MAX_CHARS]
-        else:
-            chunks.append(with_heading(para[:MAX_CHARS], current_heading))
-            current = ""
-
+def section_to_chunks(heading: str, body: str) -> list[str]:
+    text = f"{heading}\n{body}".strip() if heading else body.strip()
+    if len(text) <= MAX_CHARS:
+        return [text] if len(text) >= MIN_CHARS else []
+    chunks = []
+    words = text.split()
+    current: list[str] = []
+    for word in words:
+        current.append(word)
+        if len(" ".join(current)) >= MAX_CHARS - 80:
+            chunks.append(" ".join(current))
+            current = current[-12:]
     if current:
-        chunks.append(with_heading(current, current_heading))
-
-    merged: list[str] = []
-    for chunk in chunks:
-        if merged and len(merged[-1]) < TARGET_MIN and len(merged[-1]) + 1 + len(chunk) <= MAX_CHARS:
-            merged[-1] = f"{merged[-1]}\n{chunk}".strip()
+        tail = " ".join(current)
+        if chunks and len(tail) < MIN_CHARS:
+            chunks[-1] = f"{chunks[-1]} {tail}".strip()
         else:
-            merged.append(chunk)
-    return [chunk for chunk in merged if len(chunk) >= MIN_CHARS]
+            chunks.append(tail)
+    return [chunk for chunk in chunks if len(chunk) >= MIN_CHARS]
 
 
 def extract_pdf_chunks(pdf_path: Path) -> list[dict]:
     lang = detect_lang(pdf_path)
+    doc_type = detect_doc_type(pdf_path)
     records = []
     with pymupdf.open(pdf_path) as doc:
         for page_index, page in enumerate(doc, start=1):
             page_text = normalize_text(page.get_text("text") or "")
-            for chunk in pack_chunks(split_paragraphs(page_text)):
-                records.append(
-                    {
-                        "text": chunk,
-                        "source": pdf_path.name,
-                        "page": page_index,
-                        "lang": lang,
-                    }
-                )
+            for heading, body in split_sections(page_text):
+                for chunk in section_to_chunks(heading, body):
+                    records.append(
+                        {
+                            "text": chunk,
+                            "source": pdf_path.name,
+                            "page": page_index,
+                            "lang": lang,
+                            "doc_type": doc_type,
+                            "heading": heading[:200],
+                        }
+                    )
     return records
 
 
@@ -188,6 +205,8 @@ def main() -> None:
                     "source": item["source"],
                     "page": item["page"],
                     "lang": item["lang"],
+                    "doc_type": item["doc_type"],
+                    "heading": item["heading"],
                 }
                 for item in batch
             ],

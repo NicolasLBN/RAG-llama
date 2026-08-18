@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import unicodedata
 from pathlib import Path
 
 import chromadb
@@ -16,9 +17,50 @@ HEALTH_EMBED = "http://localhost:8081/health"
 HEALTH_CHAT = "http://localhost:8080/health"
 
 SYSTEM_PROMPT = (
-    "Tu es l'assistant technique de la machine. "
-    "Réponds à l'opérateur uniquement avec l'extrait suivant du manuel."
+    "Tu es l'assistant technique de la machine OptiJet. "
+    "Tu reponds UNIQUEMENT avec les etapes ecrites dans les extraits du manuel. "
+    "Reproduis les actions concretes (boutons, durees, ordre). "
+    "N'invente rien. N'utilise pas un extrait de depannage si la question "
+    "porte sur une procedure normale. "
+    "Si les extraits ne contiennent pas la procedure, dis exactement : "
+    "Je n'ai pas trouve cette procedure dans le manuel."
 )
+
+SYNONYMS = {
+    "demarrer": [
+        "mise en marche",
+        "mettre en marche",
+        "allumer",
+        "marche/arret",
+        "appui long",
+        "touche marche",
+        "demarrage",
+    ],
+    "arreter": ["arret", "eteindre", "mise a l'arret", "marche/arret"],
+    "batterie": ["batteries", "remplacement des batteries", "charger"],
+    "erreur": ["depannage", "panne", "code", "defaut"],
+}
+
+PHRASE_BONUS = [
+    "mise en marche",
+    "mettre en marche",
+    "touche marche",
+    "appui long",
+    "allumer",
+]
+PHRASE_PENALTY = [
+    "ne demarre pas",
+    "depannage",
+    "panne",
+    "bug logiciel",
+    "si le probleme persiste",
+]
+
+
+def fold(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", text)
+    stripped = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return stripped.lower()
 
 
 def wait_for(url: str, name: str, timeout_s: int = 180) -> None:
@@ -44,15 +86,48 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item["embedding"] for item in items]
 
 
+def query_terms(question: str) -> list[str]:
+    folded = fold(question)
+    terms = [folded]
+    for key, extras in SYNONYMS.items():
+        if key in folded or any(fold(extra) in folded for extra in extras):
+            terms.extend(extras)
+            terms.append(key)
+    if "optijet" not in folded:
+        terms.append("optijet")
+    return list(dict.fromkeys(terms))
+
+
 def enrich_query(question: str) -> str:
-    cleaned = " ".join(question.split())
-    if "optijet" not in cleaned.lower():
-        cleaned = f"{cleaned} machine OPTIJET"
-    return f"query: {cleaned}"
+    extras = query_terms(question)
+    unique = [term for term in extras if term not in fold(question)]
+    suffix = " ".join(unique[:6])
+    body = question.strip()
+    if suffix:
+        body = f"{body} {suffix}"
+    return f"query: {body}"
 
 
 def embed_query(question: str) -> list[float]:
     return embed_texts([enrich_query(question)])[0]
+
+
+def lexical_score(question: str, text: str, heading: str, doc_type: str) -> float:
+    blob = fold(f"{heading} {text}")
+    terms = query_terms(question)
+    score = 0.0
+    for term in terms:
+        if term and term in blob:
+            score += 1.5 if term in fold(heading) else 1.0
+    for phrase in PHRASE_BONUS:
+        if phrase in blob:
+            score += 3.0
+    for phrase in PHRASE_PENALTY:
+        if phrase in blob:
+            score -= 4.0
+    if doc_type == "quick_guide" and "comment" in fold(question):
+        score += 1.5
+    return score
 
 
 def open_collection(reset: bool = False) -> chromadb.Collection:
@@ -70,10 +145,10 @@ def open_collection(reset: bool = False) -> chromadb.Collection:
 
 def search_chunks(
     question: str,
-    n_results: int = 5,
+    n_results: int = 3,
     lang: str = "fr",
-    max_distance: float = 0.55,
-    fetch_k: int = 12,
+    max_distance: float = 0.75,
+    fetch_k: int = 30,
 ) -> list[dict]:
     collection = open_collection()
     if collection.count() == 0:
@@ -102,29 +177,41 @@ def search_chunks(
     distances = result.get("distances") or [[]]
     for doc, meta, distance in zip(documents[0], metadatas[0], distances[0]):
         meta = meta or {}
+        heading = meta.get("heading", "")
+        doc_type = meta.get("doc_type", "")
+        lex = lexical_score(question, doc, heading, doc_type)
+        semantic = max(0.0, 1.0 - float(distance))
+        combined = 0.35 * semantic + 0.65 * (lex / 12.0)
         hits.append(
             {
                 "text": doc,
                 "source": meta.get("source", ""),
                 "page": meta.get("page", 0),
                 "lang": meta.get("lang", ""),
-                "distance": distance,
+                "heading": heading,
+                "doc_type": doc_type,
+                "distance": float(distance),
+                "lexical": lex,
+                "score": combined,
             }
         )
 
-    filtered = [hit for hit in hits if hit["distance"] <= max_distance]
-    return (filtered or hits[:1])[:n_results]
+    hits.sort(key=lambda hit: hit["score"], reverse=True)
+    filtered = [hit for hit in hits if hit["distance"] <= max_distance and hit["lexical"] > 0]
+    selected = (filtered or hits[:1])[:n_results]
+    return selected
 
 
 def ask_chat(question: str, excerpts: list[dict]) -> str:
     excerpt_block = "\n\n".join(
-        f"[{hit['source']} p.{hit['page']}]\n{hit['text']}" for hit in excerpts
+        f"Extrait {index} [{hit['source']} p.{hit['page']}]\n{hit['text']}"
+        for index, hit in enumerate(excerpts, start=1)
     )
     user_prompt = (
-        f"Extrait du manuel : {excerpt_block}\n\n"
-        f"Question : {question}\n\n"
-        "Reponds en francais, de facon courte et operationnelle. "
-        "Si l'extrait ne contient pas la reponse, dis-le clairement."
+        f"{excerpt_block}\n\n"
+        f"Question de l'operateur : {question}\n\n"
+        "Donne une reponse courte, en francais, sous forme d'etapes numerotees "
+        "tirees uniquement des extraits ci-dessus."
     )
     response = requests.post(
         CHAT_URL,
@@ -134,8 +221,8 @@ def ask_chat(question: str, excerpts: list[dict]) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.2,
-            "max_tokens": 256,
+            "temperature": 0.0,
+            "max_tokens": 220,
         },
         timeout=180,
     )
