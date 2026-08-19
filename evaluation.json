@@ -1,0 +1,88 @@
+{
+  "cases": [
+    {
+      "question": "Comment demarrer la machine OPTIJET ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 16,
+      "expected_heading": "7.1 Mise en marche et arret de l'appareil",
+      "lang": "fr"
+    },
+    {
+      "question": "Comment arreter l'appareil ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 16,
+      "expected_heading": "7.1 Mise en marche et arret de l'appareil",
+      "lang": "fr"
+    },
+    {
+      "question": "Comment remplacer les batteries ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 15,
+      "expected_heading": "6.7.1 Remplacement des batteries",
+      "lang": "fr"
+    },
+    {
+      "question": "Quelle est la pression de service maximale de l'air comprime ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 14,
+      "expected_heading": "6.5 Raccordement pneumatique",
+      "lang": "fr"
+    },
+    {
+      "question": "Quelle pression d'air ouvrir apres 25 metres de pose ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 21,
+      "expected_heading": "7.11",
+      "lang": "fr"
+    },
+    {
+      "question": "Combien de temps dure la procedure de profiling ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 19,
+      "expected_heading": "7.10 Profiling",
+      "lang": "fr"
+    },
+    {
+      "question": "A partir de quel niveau apparait Low Batteries ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 18,
+      "expected_heading": "7.8 Niveau de charge des batteries",
+      "lang": "fr"
+    },
+    {
+      "question": "Que faire si le moteur electrique ne demarre pas ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 31,
+      "expected_heading": "9 Resolution des problemes",
+      "lang": "fr"
+    },
+    {
+      "question": "Entre quelles valeurs peut-on regler Fmax ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 17,
+      "expected_heading": "7.6.2",
+      "lang": "fr"
+    },
+    {
+      "question": "Comment connecter la tablette a l'OptiJet ?",
+      "expected_source": "298.410-fr",
+      "expected_page": 22,
+      "expected_heading": "7.14.2 Connexion de la tablette",
+      "lang": "fr"
+    },
+    {
+      "question": "How do I switch the machine on?",
+      "expected_source": "298.410-en",
+      "expected_page": 16,
+      "expected_heading": "7.1",
+      "lang": "en"
+    },
+    {
+      "question": "What is the maximum operating pressure?",
+      "expected_source": "298.410-en",
+      "expected_page": 14,
+      "expected_heading": "6.5",
+      "lang": "en"
+    }
+  ]
+}

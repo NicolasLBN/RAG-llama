@@ -1,0 +1,50 @@
+{
+  "synonyms": {
+    "demarrer": [
+      "mise en marche",
+      "mettre en marche",
+      "allumer",
+      "marche/arret",
+      "appui long",
+      "touche marche",
+      "demarrage"
+    ],
+    "arreter": [
+      "arret",
+      "eteindre",
+      "mise a l'arret",
+      "marche/arret"
+    ],
+    "batterie": [
+      "batteries",
+      "remplacement des batteries",
+      "charger",
+      "niveau de charge"
+    ],
+    "erreur": [
+      "defaut",
+      "code",
+      "message d'erreur",
+      "alarme"
+    ],
+    "profiling": [
+      "profilage",
+      "procedure de profiling"
+    ]
+  },
+  "phrase_bonus": [
+    "mise en marche",
+    "mettre en marche",
+    "touche marche",
+    "appui long",
+    "allumer"
+  ],
+  "phrase_penalty": [
+    "ne demarre pas",
+    "resolution des problemes",
+    "troubleshooting",
+    "causes probables",
+    "si le probleme persiste",
+    "bug logiciel"
+  ]
+}
