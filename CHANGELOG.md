@@ -27,6 +27,7 @@ Priorité : fiabilité > qualité de recherche > traçabilité > performance > c
 - Classification légère des questions (procédure, alarme, diagnostic, valeur, etc.).
 - Sortie structurée pour l'HMI : `{ answer, confidence, sources }`.
 - `python ask.py --json` et `python ask.py --debug`.
+- `python ui.py` : fenêtre de chat locale (port 8090) branchée sur le RAG, pas sur l’UI llama.cpp.
 - Logs fichier `logs/rag.log` : question, scores, décision de confiance, `embedding_time` / `retrieval_time` / `generation_time` / `total_time`.
 - Filtre de langue strict : `fr`, `en`, `all` (plus de repli silencieux vers toutes les langues).
 
@@ -46,6 +47,7 @@ Priorité : fiabilité > qualité de recherche > traçabilité > performance > c
 - Si aucun résultat ne dépasse `MIN_SEMANTIC_SCORE` / `MIN_FINAL_SCORE`, réponse « information non trouvée » **sans** appeler Qwen.
 - Les extraits de dépannage ne sont plus mélangés à une question de fonctionnement normal.
 - Titres coupés sur deux lignes (ex. `7.11.4`) correctement recombinés.
+- Pertinence opérateur : `7.1 Mise en marche` n'était plus retrouvé (`enrich_query` off, stopwords absents, 4 procédures mélangées). `enrich_query` est réactivé par défaut ; une seule famille de section est envoyée à Qwen ; `etindre` est reconnu comme `eteindre`.
 
 ### Migration
 

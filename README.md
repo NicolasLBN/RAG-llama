@@ -108,7 +108,18 @@ Paramètres de découpe : `config.json` (`MIN_CHARS`, `MAX_CHARS`, `OVERLAP_CHAR
 
 Descriptions d’images hors ligne (optionnel) : `image_captions.json` au format `{"298.410-p16-img1": "Pupitre de commande"}`.
 
-## Poser une question
+## Interface chat (RAG)
+
+L’UI llama.cpp sur le port **8080** parle directement à Qwen, **sans** les manuels. Pour l’opérateur, lancer l’UI qui appelle le pipeline RAG :
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python ui.py
+```
+
+Ouvrir http://127.0.0.1:8090 — les questions passent par `answer_question()` (même logique que `ask.py`), avec sources sous la réponse.
+
+## Poser une question (ligne de commande)
 
 ```powershell
 python ask.py "Comment démarrer la machine OPTIJET ?"

@@ -148,11 +148,14 @@ def is_noise(line: str) -> bool:
 
 def parse_heading(line: str) -> tuple[int, str] | None:
     if SPECIAL_HEADING.match(line):
-        return 99, line
+        return 99, line.split()[0].upper() if line[:6].upper() in {"NOTE", "DANGER"} else line[:40]
     numbered = SECTION_WITH_TITLE.match(line)
     if numbered:
         number, title = numbered.group(1), numbered.group(2).strip()
-        return number.count(".") + 1, f"{number} {title}"
+        title = re.split(r"\s+a\)\s+", title, maxsplit=1)[0]
+        if len(title) > 80:
+            title = title[:80].rsplit(" ", 1)[0]
+        return number.count(".") + 1, f"{number} {title}".strip()
     chapter = CHAPTER.match(line)
     if chapter and len(line) <= 90:
         return 1, line

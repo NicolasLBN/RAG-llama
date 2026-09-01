@@ -15,16 +15,17 @@
     "query_prefix": "query: ",
     "document_prefix": ""
   },
-  "search": {
-    "fetch_k": 30,
-    "final_k": 4,
-    "exact_weight": 0.40,
-    "lexical_weight": 0.25,
-    "semantic_weight": 0.35,
-    "min_semantic_score": 0.28,
-    "min_final_score": 0.32,
-    "enrich_query": false
-  },
+    "search": {
+        "fetch_k": 40,
+        "final_k": 3,
+        "exact_weight": 0.35,
+        "lexical_weight": 0.25,
+        "semantic_weight": 0.55,
+        "lexical_scale": 8.0,
+        "min_semantic_score": 0.28,
+        "min_final_score": 0.32,
+        "enrich_query": true
+    },
   "generation": {
     "temperature": 0.0,
     "max_tokens": 280,

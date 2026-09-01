@@ -24,14 +24,15 @@ from settings import (
 
 LOGGER = logging.getLogger("rag")
 
-FETCH_K = int(CFG.get("search", "fetch_k", default=30))
-FINAL_K = int(CFG.get("search", "final_k", default=4))
-EXACT_WEIGHT = float(CFG.get("search", "exact_weight", default=0.40))
+FETCH_K = int(CFG.get("search", "fetch_k", default=40))
+FINAL_K = int(CFG.get("search", "final_k", default=3))
+EXACT_WEIGHT = float(CFG.get("search", "exact_weight", default=0.35))
 LEXICAL_WEIGHT = float(CFG.get("search", "lexical_weight", default=0.25))
-SEMANTIC_WEIGHT = float(CFG.get("search", "semantic_weight", default=0.35))
+SEMANTIC_WEIGHT = float(CFG.get("search", "semantic_weight", default=0.55))
+LEXICAL_SCALE = float(CFG.get("search", "lexical_scale", default=8.0))
 MIN_SEMANTIC_SCORE = float(CFG.get("search", "min_semantic_score", default=0.28))
 MIN_FINAL_SCORE = float(CFG.get("search", "min_final_score", default=0.32))
-ENRICH_QUERY = bool(CFG.get("search", "enrich_query", default=False))
+ENRICH_QUERY = bool(CFG.get("search", "enrich_query", default=True))
 QUERY_PREFIX = str(CFG.get("embedding", "query_prefix", default="query: "))
 TEMPERATURE = float(CFG.get("generation", "temperature", default=0.0))
 MAX_TOKENS = int(CFG.get("generation", "max_tokens", default=280))
@@ -51,6 +52,88 @@ TECHNICAL_PATTERNS = [
 ]
 
 TOKEN_RE = re.compile(r"[a-z0-9]+(?:[./-][a-z0-9]+)*", re.I)
+
+STOPWORDS = {
+    "comment",
+    "how",
+    "the",
+    "les",
+    "des",
+    "une",
+    "est",
+    "que",
+    "qui",
+    "pour",
+    "avec",
+    "dans",
+    "sur",
+    "par",
+    "pas",
+    "plus",
+    "aux",
+    "du",
+    "de",
+    "la",
+    "le",
+    "un",
+    "en",
+    "ce",
+    "cet",
+    "cette",
+    "mon",
+    "ma",
+    "mes",
+    "nos",
+    "votre",
+    "what",
+    "does",
+    "and",
+    "for",
+    "with",
+}
+
+
+def _edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > 1:
+        return 2
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right))
+    if len(left) > len(right):
+        left, right = right, left
+    skipped = 0
+    index = 0
+    for char in right:
+        if index < len(left) and left[index] == char:
+            index += 1
+        else:
+            skipped += 1
+            if skipped > 1:
+                return 2
+    return 1 if index == len(left) else 2
+
+
+def _token_matches(token: str, target: str) -> bool:
+    if not token or not target:
+        return False
+    if token == target:
+        return True
+    if " " in target and token in target.split():
+        return True
+    if len(token) >= 5 and len(target) >= 5 and _edit_distance(token, target) <= 1:
+        return True
+    return False
+
+
+def is_power_question(question: str) -> bool:
+    folded = fold(question)
+    power = any(
+        needle in folded
+        for needle in ("demarr", "allum", "arret", "eteind", "etind", "marche")
+    )
+    device = any(needle in folded for needle in ("machine", "appareil", "optijet"))
+    return power and device and "pose" not in folded
 
 QUESTION_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("alarm", ("alarme", "alarm", "code erreur", "message d'erreur", "defaut", "fault")),
@@ -77,6 +160,8 @@ QUESTION_RULES: list[tuple[str, tuple[str, ...]]] = [
             "demarrer",
             "allumer",
             "arreter",
+            "eteindre",
+            "ouvrir",
             "remplacer",
             "monter",
             "connecter",
@@ -151,14 +236,23 @@ def _synonym_data() -> dict[str, Any]:
 
 def query_terms(question: str) -> list[str]:
     folded = fold(question)
-    terms = [folded]
+    tokens = [token for token in tokenize(question) if token not in STOPWORDS]
+    terms = list(tokens)
     synonyms = _synonym_data().get("synonyms") or {}
     for key, extras in synonyms.items():
+        key_fold = fold(str(key))
         extra_list = [fold(str(item)) for item in extras]
-        if fold(str(key)) in folded or any(extra in folded for extra in extra_list):
+        triggered = key_fold in folded or any(extra in folded for extra in extra_list)
+        if not triggered:
+            triggered = any(
+                _token_matches(token, key_fold)
+                or any(_token_matches(token, extra) for extra in extra_list)
+                for token in tokens
+            )
+        if triggered:
             terms.extend(extra_list)
-            terms.append(fold(str(key)))
-    return list(dict.fromkeys(term for term in terms if term))
+            terms.append(key_fold)
+    return list(dict.fromkeys(term for term in terms if term and term not in STOPWORDS))
 
 
 def extract_technical_terms(question: str) -> list[str]:
@@ -177,7 +271,48 @@ def has_term(blob: str, term: str) -> bool:
 
 
 def tokenize(text: str) -> list[str]:
-    return [token for token in TOKEN_RE.findall(fold(text)) if len(token) >= 3]
+    return [
+        token
+        for token in TOKEN_RE.findall(fold(text))
+        if len(token) >= 3 and token not in STOPWORDS
+    ]
+
+
+def lexical_score(question: str, text: str, heading: str, doc_type: str) -> float:
+    blob = fold(f"{heading} {text}")
+    heading_blob = fold(heading)
+    score = 0.0
+    terms = query_terms(question)
+    for term in terms:
+        if not has_term(blob, term) and fold(term) not in blob:
+            continue
+        score += 1.5 if has_term(heading_blob, term) or fold(term) in heading_blob else 1.0
+    data = _synonym_data()
+    triggered = set(terms)
+    for phrase in data.get("phrase_bonus") or []:
+        phrase_fold = fold(phrase)
+        if phrase_fold in blob and phrase_fold in triggered:
+            score += 3.0
+    diagnostic_question = classify_question(question) in {"diagnostic", "alarm"}
+    if not diagnostic_question:
+        for phrase in data.get("phrase_penalty") or []:
+            if fold(phrase) in blob:
+                score -= 3.0
+    if is_power_question(question):
+        if any(
+            needle in blob
+            for needle in ("mise en marche", "mettre en marche", "touche marche")
+        ):
+            score += 4.0
+        if any(
+            needle in blob
+            for needle in ("pose du cable", "pose de cable", "crash test", "allumer la tablette")
+        ):
+            score -= 4.0
+    if "ouvrir" in fold(question) or "ouverture" in fold(question):
+        if "ouvert" in heading_blob or "ouvrir" in heading_blob:
+            score += 2.5
+    return score
 
 
 def enrich_query(question: str) -> str:
@@ -209,30 +344,6 @@ def classify_question(question: str) -> str:
     if extract_technical_terms(question):
         return "technical"
     return "explanation"
-
-
-def lexical_score(question: str, text: str, heading: str, doc_type: str) -> float:
-    blob = fold(f"{heading} {text}")
-    heading_blob = fold(heading)
-    score = 0.0
-    terms = list(dict.fromkeys(tokenize(question) + query_terms(question)))
-    for term in terms:
-        if not has_term(blob, term) and fold(term) not in blob:
-            continue
-        score += 1.5 if has_term(heading_blob, term) or fold(term) in heading_blob else 1.0
-    data = _synonym_data()
-    qfold = fold(question)
-    for phrase in data.get("phrase_bonus") or []:
-        if fold(phrase) in blob and fold(phrase) in qfold:
-            score += 2.0
-    diagnostic_question = classify_question(question) in {"diagnostic", "alarm"}
-    if not diagnostic_question:
-        for phrase in data.get("phrase_penalty") or []:
-            if fold(phrase) in blob:
-                score -= 3.0
-    if doc_type == "quick_guide" and classify_question(question) == "procedure":
-        score += 0.8
-    return score
 
 
 def exact_score(question: str, text: str, heading: str) -> float:
@@ -267,7 +378,8 @@ def combine_scores(
 
     - exact: fraction des termes techniques (E102, 16 bar, 7.1...) trouves
       avec une frontiere de mot.
-    - lexical_norm: score lexical min-max normalise sur le lot candidat.
+    - lexical_norm: score lexical ramene dans [0, 1] par lexical / LEXICAL_SCALE
+      (pas un min-max sur le lot, trop instable).
     - semantic: 1 - distance cosinus renvoyee par Chroma.
 
     Les poids sont renormalises pour sommer a 1. S'il n'y a aucun terme
@@ -414,6 +526,14 @@ def rerank(hits: list[dict[str, Any]], question: str) -> list[dict[str, Any]]:
     return hits
 
 
+def _heading_family(hit: dict[str, Any]) -> str:
+    heading = hit.get("heading") or ""
+    match = re.match(r"^(\d+(?:\.\d+)?)", heading)
+    if match:
+        return match.group(1)
+    return fold(heading)[:40]
+
+
 def select_context(
     hits: list[dict[str, Any]],
     n_results: int = FINAL_K,
@@ -421,20 +541,24 @@ def select_context(
     min_final: float = MIN_FINAL_SCORE,
     question: str = "",
 ) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
+    passed: list[dict[str, Any]] = []
     has_terms = bool(extract_technical_terms(question))
     for hit in hits:
         semantic_ok = hit.get("semantic", 0.0) >= min_semantic
         final_ok = hit.get("score", 0.0) >= min_final
         exact_ok = has_terms and hit.get("exact", 0.0) >= 0.5
         if (semantic_ok and final_ok) or exact_ok:
-            selected.append(hit)
-        if len(selected) >= n_results:
-            break
+            passed.append(hit)
+    if not passed:
+        LOGGER.debug("select_context: 0 extraits au-dessus du seuil")
+        return []
+    family = _heading_family(passed[0])
+    selected = [hit for hit in passed if _heading_family(hit) == family][:n_results]
     LOGGER.debug(
-        "select_context: %s/%s retenus (min_semantic=%.2f min_final=%.2f)",
+        "select_context: %s/%s retenus famille=%s (min_semantic=%.2f min_final=%.2f)",
         len(selected),
         len(hits),
+        family,
         min_semantic,
         min_final,
     )
@@ -451,12 +575,10 @@ def _score_hits(question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any
             hit.get("doc_type", ""),
         )
         hit["exact"] = exact_score(question, hit.get("text", ""), hit.get("heading", ""))
-    lexical_norms = _normalize([float(hit["lexical"]) for hit in hits])
-    for hit, lexical_norm in zip(hits, lexical_norms):
-        hit["lexical_norm"] = lexical_norm
+        hit["lexical_norm"] = min(1.0, max(0.0, float(hit["lexical"]) / max(LEXICAL_SCALE, 1e-6)))
         hit["score"] = combine_scores(
             float(hit["exact"]),
-            lexical_norm,
+            float(hit["lexical_norm"]),
             float(hit.get("semantic", 0.0)),
             has_technical_terms=has_terms,
         )

@@ -12,8 +12,20 @@
     "arreter": [
       "arret",
       "eteindre",
+      "etindre",
       "mise a l'arret",
       "marche/arret"
+    ],
+    "eteindre": [
+      "arreter",
+      "arret",
+      "mise a l'arret",
+      "marche/arret"
+    ],
+    "ouvrir": [
+      "ouverture",
+      "ouvrir les courroies",
+      "fermeture et ouverture"
     ],
     "batterie": [
       "batteries",
@@ -37,7 +49,7 @@
     "mettre en marche",
     "touche marche",
     "appui long",
-    "allumer"
+    "marche/arret"
   ],
   "phrase_penalty": [
     "ne demarre pas",
