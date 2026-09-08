@@ -35,8 +35,24 @@ MIN_FINAL_SCORE = float(CFG.get("search", "min_final_score", default=0.32))
 ENRICH_QUERY = bool(CFG.get("search", "enrich_query", default=True))
 QUERY_PREFIX = str(CFG.get("embedding", "query_prefix", default="query: "))
 TEMPERATURE = float(CFG.get("generation", "temperature", default=0.0))
-MAX_TOKENS = int(CFG.get("generation", "max_tokens", default=280))
+MAX_TOKENS = int(CFG.get("generation", "max_tokens", default=180))
+MAX_TOKENS_BY_TYPE = CFG.get("generation", "max_tokens_by_type", default={}) or {}
+FINAL_K_BY_TYPE = CFG.get("search", "final_k_by_type", default={}) or {}
 CHAT_TIMEOUT = int(CFG.get("generation", "timeout_s", default=180))
+
+
+def final_k_for(question_type: str, override: int | None = None) -> int:
+    if override is not None:
+        return int(override)
+    if isinstance(FINAL_K_BY_TYPE, dict) and question_type in FINAL_K_BY_TYPE:
+        return int(FINAL_K_BY_TYPE[question_type])
+    return FINAL_K
+
+
+def max_tokens_for(question_type: str) -> int:
+    if isinstance(MAX_TOKENS_BY_TYPE, dict) and question_type in MAX_TOKENS_BY_TYPE:
+        return int(MAX_TOKENS_BY_TYPE[question_type])
+    return MAX_TOKENS
 
 NOT_FOUND = {
     "fr": "Je n'ai pas trouve cette information dans le manuel.",
@@ -825,6 +841,14 @@ def _sources_from_excerpts(excerpts: list[dict]) -> list[dict[str, Any]]:
     return sources
 
 
+def _clip_excerpt_text(hit: dict[str, Any]) -> str:
+    text = (hit.get("text") or "").strip()
+    for prefix in ((hit.get("section_path") or "").strip(), (hit.get("heading") or "").strip()):
+        if prefix and text.startswith(prefix):
+            text = text[len(prefix) :].lstrip(" >\n")
+    return text.strip()
+
+
 def _system_prompt(lang: str) -> str:
     if lang == "en":
         return (
@@ -834,9 +858,10 @@ def _system_prompt(lang: str) -> str:
             "Keep numeric values and units exactly as written. "
             "Do not mix two different procedures. "
             "Do not use a troubleshooting excerpt to answer a normal operating question. "
+            "If the excerpts mention the topic, you MUST answer from them. "
             "If the information is absent, answer exactly: "
             f"{NOT_FOUND['en']} "
-            "Stay concise and suited to an operator."
+            "Stay concise: at most 8 short lines, no preamble."
         )
     return (
         "Tu es l'assistant technique de la machine OptiJet. "
@@ -847,34 +872,35 @@ def _system_prompt(lang: str) -> str:
         "Tu ne melanges pas deux procedures differentes. "
         "Tu n'utilises pas une procedure de depannage pour une question de "
         "fonctionnement normal. "
+        "Si les extraits parlent du sujet, tu DOIS repondre d'apres eux. "
         "Si l'information est absente, tu reponds exactement : "
         f"{NOT_FOUND['fr']} "
-        "Tu restes concis et adapte a un operateur."
+        "Tu restes concis: 8 lignes courtes maximum, sans preambule."
     )
 
 
 def _format_instruction(question_type: str, lang: str) -> str:
     if lang == "en":
         mapping = {
-            "procedure": "Answer with short numbered steps taken only from the excerpts.",
-            "maintenance": "Answer with short numbered maintenance steps taken only from the excerpts.",
-            "alarm": "Give the meaning, then cause/procedure only if present in the excerpts.",
-            "diagnostic": "Give likely causes and remedies only if present in the excerpts.",
-            "value": "Report the numeric value and unit exactly as written.",
-            "definition": "Give a short definition using only the excerpts.",
-            "technical": "Give the requested technical information using only the excerpts.",
-            "explanation": "Give a short descriptive answer using only the excerpts.",
+            "procedure": "Answer with at most 6 short numbered steps from the excerpts only.",
+            "maintenance": "Answer with at most 6 short numbered maintenance steps from the excerpts only.",
+            "alarm": "Give the meaning, then at most 3 causes/remedies if present in the excerpts.",
+            "diagnostic": "Give at most 5 causes and 5 remedies, one line each, taken from the troubleshooting table in the excerpts. Do not repeat items. If the table is present, the information was found.",
+            "value": "Reply with the numeric value and unit only, exactly as written. One line.",
+            "definition": "Give a one-sentence definition using only the excerpts.",
+            "technical": "Give the requested technical information in at most 3 lines using only the excerpts.",
+            "explanation": "Give a short descriptive answer (at most 4 lines) using only the excerpts.",
         }
     else:
         mapping = {
-            "procedure": "Reponds par des etapes numerotees courtes tirees uniquement des extraits.",
-            "maintenance": "Reponds par des etapes d'entretien numerotees, uniquement d'apres les extraits.",
-            "alarm": "Donne la signification, puis cause/procedure uniquement si elles figurent dans les extraits.",
-            "diagnostic": "Donne les causes et remedes uniquement s'ils figurent dans les extraits.",
-            "value": "Donne la valeur numerique et l'unite exactement telles qu'ecrites.",
-            "definition": "Donne une definition courte uniquement d'apres les extraits.",
-            "technical": "Donne l'information technique demandee uniquement d'apres les extraits.",
-            "explanation": "Donne une reponse descriptive courte uniquement d'apres les extraits.",
+            "procedure": "Reponds par au plus 6 etapes numerotees courtes, uniquement d'apres les extraits.",
+            "maintenance": "Reponds par au plus 6 etapes d'entretien numerotees, uniquement d'apres les extraits.",
+            "alarm": "Donne la signification, puis au plus 3 causes/remedes si elles figurent dans les extraits.",
+            "diagnostic": "A partir du tableau de depannage dans les extraits, donne au plus 5 causes et 5 remedes, une ligne chacun. Ne duplique pas. Si le tableau est present, l'information a ete trouvee.",
+            "value": "Donne uniquement la valeur numerique et l'unite telles qu'ecrites. Une seule ligne.",
+            "definition": "Donne une definition en une phrase uniquement d'apres les extraits.",
+            "technical": "Donne l'information technique demandee en 3 lignes maximum, uniquement d'apres les extraits.",
+            "explanation": "Donne une reponse descriptive courte (4 lignes max) uniquement d'apres les extraits.",
         }
     return mapping.get(question_type, mapping["explanation"])
 
@@ -892,6 +918,7 @@ def ask_chat(
     """
     setup_logging()
     qtype = question_type or classify_question(question)
+    token_limit = max_tokens_for(qtype)
     confidence = max((float(hit.get("score") or 0.0) for hit in excerpts), default=0.0)
     sources = _sources_from_excerpts(excerpts)
     if not excerpts:
@@ -904,10 +931,8 @@ def ask_chat(
 
     excerpt_block = "\n\n".join(
         (
-            f"Extrait {index} [{hit.get('source', '')} "
-            f"p.{hit.get('start_page') or hit.get('page')}"
-            f"-{hit.get('end_page') or hit.get('page')} "
-            f"| {hit.get('heading', '')}]\n{hit.get('text', '')}"
+            f"Extrait {index} [p.{hit.get('start_page') or hit.get('page')}"
+            f"| {hit.get('heading', '')}]\n{_clip_excerpt_text(hit)}"
         )
         for index, hit in enumerate(excerpts, start=1)
     )
@@ -935,7 +960,8 @@ def ask_chat(
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": TEMPERATURE,
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": token_limit,
+                "stop": ["<|im_end|>", "<|endoftext|>"],
             },
             timeout=CHAT_TIMEOUT,
         )
@@ -947,13 +973,20 @@ def ask_chat(
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ChatError(f"Reponse LLM JSON invalide: {exc}") from exc
     generation_time = time.perf_counter() - started
-    LOGGER.debug("generation_time=%.3fs type=%s confidence=%.3f", generation_time, qtype, confidence)
+    LOGGER.debug(
+        "generation_time=%.3fs type=%s max_tokens=%s confidence=%.3f",
+        generation_time,
+        qtype,
+        token_limit,
+        confidence,
+    )
     return {
         "answer": answer,
         "confidence": round(confidence, 4),
         "sources": sources,
         "question_type": qtype,
         "generation_time": generation_time,
+        "max_tokens": token_limit,
     }
 
 
@@ -967,7 +1000,7 @@ def answer_question(
     setup_logging()
     started = time.perf_counter()
     qtype = classify_question(question)
-    final_k = n_results if n_results is not None else FINAL_K
+    final_k = final_k_for(qtype, n_results)
     min_semantic = MIN_SEMANTIC_SCORE
     if max_distance is not None:
         min_semantic = max(0.0, 1.0 - float(max_distance))
@@ -983,9 +1016,11 @@ def answer_question(
         question=question,
     )
     LOGGER.debug(
-        "decision confiance: %s extraits retenus / %s candidats",
+        "decision confiance: %s extraits retenus / %s candidats (final_k=%s type=%s)",
         len(selected),
         len(ranked),
+        final_k,
+        qtype,
     )
     if not selected:
         LOGGER.info("Aucun extrait au-dessus du seuil pour %r", question)

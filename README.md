@@ -183,21 +183,48 @@ Chat :
 curl -X POST http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"qwen\",\"messages\":[{\"role\":\"user\",\"content\":\"Explique OPTIJET en une phrase\"}]}"
 ```
 
-## Mémoire et perf
+## Repréparer après une modification du RAG
 
-Sur une machine 8 Go, viser ~2.5–3 Go au total :
+Ce qui a changé récemment (ranking, synonymes, prompts, `max_tokens`) s’applique **sans** réindexation : `chroma_db/` n’a pas besoin d’être reconstruit.
 
-- embeddings : ~200 Mo
-- Qwen Q4_K_M, contexte 2048 : ~2 Go
-- Python + Chroma : quelques centaines de Mo
-
-Ajuster `-t` (threads CPU) dans `docker-compose.yaml` si les réponses dépassent 2–4 s.
+Réindexer seulement si tu as changé le **découpage** (`config.json` → `chunking`), `ingest.py`, le modèle d’embeddings, ou ajouté/modifié des PDF.
 
 ```powershell
-docker stats
+.\.venv\Scripts\Activate.ps1
+docker compose up -d
 ```
 
-`--debug` sépare `embedding_time`, `retrieval_time`, `generation_time`, `total_time`.
+Attendre que les deux `/health` répondent, puis **soit** une mise à jour incrémentale :
+
+```powershell
+python ingest.py --update --lang all
+```
+
+**soit** une reconstruction complète (base vide puis tous les PDF FR + EN) :
+
+```powershell
+python ingest.py --reset --lang all
+```
+
+`--reset --lang fr` tout seul efface l’anglais de la base. Ensuite :
+
+```powershell
+python evaluate.py --lang all
+python ask.py --debug --lang fr "Comment demarrer la machine OPTIJET ?"
+```
+
+Qwen n’est pas nécessaire pour `ingest.py` ni `evaluate.py` (seulement `llama-embed` :8081). `docker compose up -d` recharge les flags de `docker-compose.yaml` (threads, flash-attn).
+
+## Mémoire et perf
+
+Détail des pistes restantes (streaming, cache de prompt, modèle plus petit, GPU) : [docs/perfs.md](docs/perfs.md).
+
+Sur une machine 8 Go, viser ~2.5–3 Go au total (embed ~200 Mo, Qwen ~2 Go, Python + Chroma le reste). Mesure :
+
+```powershell
+python ask.py --debug "Comment demarrer la machine OPTIJET ?"
+docker stats
+```
 
 ## Fichiers
 
@@ -212,6 +239,7 @@ docker stats
 | `rag.py` | Embeddings / Chroma / chat — [FR](docs/moteur.md) / [EN](docs/engine.md) |
 | `evaluate.py` | Recall@k — [FR](docs/moteur.md) / [EN](docs/engine.md) |
 | `evaluation.json` | Jeu de test |
+| [docs/perfs.md](docs/perfs.md) | Pistes d’amélioration des perfs |
 | `models/` | Fichiers GGUF |
 | `pdf/` | Manuels OPTIJET |
 | `chroma_db/` | Base vectorielle locale (générée) |

@@ -65,7 +65,9 @@ def main() -> None:
             f"embedding={timings.get('embedding_time', 0):.3f}s "
             f"retrieval={timings.get('retrieval_time', 0):.3f}s "
             f"generation={timings.get('generation_time', 0):.3f}s "
-            f"total={timings.get('total_time', 0):.3f}s"
+            f"total={timings.get('total_time', 0):.3f}s "
+            f"max_tokens={result.get('max_tokens', '')} "
+            f"hits={len(result.get('hits') or [])}"
         )
         for index, hit in enumerate(result.get("hits") or [], start=1):
             print(

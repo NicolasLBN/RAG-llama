@@ -35,6 +35,16 @@ DEFAULTS: dict[str, Any] = {
     "search": {
         "fetch_k": 40,
         "final_k": 3,
+        "final_k_by_type": {
+            "value": 1,
+            "definition": 1,
+            "procedure": 1,
+            "maintenance": 1,
+            "explanation": 2,
+            "technical": 2,
+            "alarm": 2,
+            "diagnostic": 3,
+        },
         "exact_weight": 0.35,
         "lexical_weight": 0.25,
         "semantic_weight": 0.55,
@@ -43,7 +53,21 @@ DEFAULTS: dict[str, Any] = {
         "min_final_score": 0.32,
         "enrich_query": True,
     },
-    "generation": {"temperature": 0.0, "max_tokens": 280, "timeout_s": 180},
+    "generation": {
+        "temperature": 0.0,
+        "max_tokens": 180,
+        "max_tokens_by_type": {
+            "value": 50,
+            "definition": 60,
+            "procedure": 120,
+            "maintenance": 120,
+            "explanation": 100,
+            "technical": 80,
+            "alarm": 140,
+            "diagnostic": 160,
+        },
+        "timeout_s": 180,
+    },
     "logging": {"level": "INFO", "file": "logs/rag.log"},
 }
 

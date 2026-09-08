@@ -17,7 +17,7 @@ services:
       - --gguf-path
       - /models/snowflake-arctic-embed-m-v2.0.q4_k_mlp_q8_attn.gguf
       - --threads
-      - "4"
+      - "2"
       - --max-batch-tokens
       - "8192"
 
@@ -39,9 +39,17 @@ services:
       - -c
       - "2048"
       - -n
-      - "256"
+      - "160"
       - -t
-      - "4"
+      - "6"
+      - -b
+      - "512"
+      - -ub
+      - "256"
+      - -fa
+      - on
+      - --parallel
+      - "1"
       - --jinja
       - --alias
       - qwen
