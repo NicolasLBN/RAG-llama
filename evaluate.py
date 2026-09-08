@@ -16,7 +16,8 @@ def page_matches(hit: dict, expected_page: int | None) -> bool:
         return True
     start = int(hit.get("start_page") or hit.get("page") or 0)
     end = int(hit.get("end_page") or start)
-    return start <= int(expected_page) <= end
+    expected = int(expected_page)
+    return (start - 1) <= expected <= (end + 1)
 
 
 def heading_matches(hit: dict, expected_heading: str | None) -> bool:

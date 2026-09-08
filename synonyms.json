@@ -27,6 +27,11 @@
       "ouvrir les courroies",
       "fermeture et ouverture"
     ],
+    "pose": [
+      "mise en place du cable",
+      "commencer la pose",
+      "25 m"
+    ],
     "batterie": [
       "batteries",
       "remplacement des batteries",
@@ -42,6 +47,12 @@
     "profiling": [
       "profilage",
       "procedure de profiling"
+    ],
+    "ne demarre pas": [
+      "resolution des problemes",
+      "causes probables",
+      "depannage",
+      "troubleshooting"
     ]
   },
   "phrase_bonus": [
@@ -49,7 +60,11 @@
     "mettre en marche",
     "touche marche",
     "appui long",
-    "marche/arret"
+    "marche/arret",
+    "mise en place du cable",
+    "commencer la pose",
+    "2 a 3 bar",
+    "2-3 bar"
   ],
   "phrase_penalty": [
     "ne demarre pas",

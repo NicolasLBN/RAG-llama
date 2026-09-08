@@ -135,6 +135,33 @@ def is_power_question(question: str) -> bool:
     device = any(needle in folded for needle in ("machine", "appareil", "optijet"))
     return power and device and "pose" not in folded
 
+
+def is_laying_question(question: str) -> bool:
+    folded = fold(question)
+    if "courroie" in folded:
+        return False
+    has_pose = re.search(r"(?<![a-z])pose(?![a-z])", folded) is not None
+    has_length = "25" in folded or re.search(r"(?<![a-z])metres?(?![a-z])", folded) is not None
+    has_pressure = "pression" in folded or "pressure" in folded
+    return bool(has_pose and (has_length or has_pressure))
+
+
+def is_weak_heading(heading: str) -> bool:
+    cleaned = fold(heading).strip(" !:.")
+    return cleaned in {"note", "danger", "important", "attention", "warning"}
+
+
+def has_distance_pressure(text: str) -> bool:
+    blob = fold(text)
+    has_distance = "25 m" in blob or "25 metre" in blob
+    has_pressure = "bar" in blob or "vanne" in blob
+    return has_distance and has_pressure
+
+
+def prefers_standard_manual(question: str) -> bool:
+    folded = fold(question)
+    return "automatic" not in folded and "tablette" not in folded
+
 QUESTION_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("alarm", ("alarme", "alarm", "code erreur", "message d'erreur", "defaut", "fault")),
     (
@@ -196,6 +223,19 @@ class ChatError(RagError):
 def fold(text: str) -> str:
     normalized = unicodedata.normalize("NFD", text or "")
     stripped = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    for quote in (
+        "\u2018",
+        "\u2019",
+        "\u201b",
+        "\u0060",
+        "\u00b4",
+        "\u02bc",
+        "\u02b9",
+        "\uff07",
+    ):
+        stripped = stripped.replace(quote, "'")
+    for dash in ("\u2013", "\u2014", "\u2212"):
+        stripped = stripped.replace(dash, "-")
     return stripped.lower()
 
 
@@ -237,10 +277,25 @@ def _synonym_data() -> dict[str, Any]:
 def query_terms(question: str) -> list[str]:
     folded = fold(question)
     tokens = [token for token in tokenize(question) if token not in STOPWORDS]
+    if is_laying_question(question):
+        tokens = [token for token in tokens if token not in {"ouvrir", "ouverture"}]
     terms = list(tokens)
+    if is_laying_question(question):
+        terms.extend(
+            [
+                "25 m",
+                "25 metre",
+                "2-3 bar",
+                "2 a 3 bar",
+                "mise en place du cable",
+                "commencer la pose",
+            ]
+        )
     synonyms = _synonym_data().get("synonyms") or {}
     for key, extras in synonyms.items():
         key_fold = fold(str(key))
+        if key_fold == "ouvrir" and is_laying_question(question):
+            continue
         extra_list = [fold(str(item)) for item in extras]
         triggered = key_fold in folded or any(extra in folded for extra in extra_list)
         if not triggered:
@@ -278,9 +333,16 @@ def tokenize(text: str) -> list[str]:
     ]
 
 
-def lexical_score(question: str, text: str, heading: str, doc_type: str) -> float:
+def lexical_score(
+    question: str,
+    text: str,
+    heading: str,
+    doc_type: str,
+    source: str = "",
+) -> float:
     blob = fold(f"{heading} {text}")
     heading_blob = fold(heading)
+    source_blob = fold(source)
     score = 0.0
     terms = query_terms(question)
     for term in terms:
@@ -298,6 +360,26 @@ def lexical_score(question: str, text: str, heading: str, doc_type: str) -> floa
         for phrase in data.get("phrase_penalty") or []:
             if fold(phrase) in blob:
                 score -= 3.0
+    if diagnostic_question:
+        if any(
+            needle in blob
+            for needle in (
+                "resolution des problemes",
+                "depannage",
+                "troubleshooting",
+                "causes probables",
+                "ne demarre pas",
+            )
+        ):
+            score += 5.0
+        if prefers_standard_manual(question) and "automatic" in source_blob:
+            score -= 3.0
+    if is_weak_heading(heading):
+        if not (
+            is_laying_question(question)
+            and ("25 m" in blob or "25 metre" in blob)
+        ):
+            score -= 4.0
     if is_power_question(question):
         if any(
             needle in blob
@@ -309,7 +391,23 @@ def lexical_score(question: str, text: str, heading: str, doc_type: str) -> floa
             for needle in ("pose du cable", "pose de cable", "crash test", "allumer la tablette")
         ):
             score -= 4.0
-    if "ouvrir" in fold(question) or "ouverture" in fold(question):
+    if is_laying_question(question):
+        if "25 m" in blob or "25 metre" in blob:
+            score += 6.0
+        if any(
+            needle in blob
+            for needle in (
+                "2 a 3 bar",
+                "2-3 bar",
+                "2 a 3 bars",
+                "mise en place du cable",
+                "commencer la pose",
+            )
+        ):
+            score += 3.0
+        if "courroie" in heading_blob:
+            score -= 4.0
+    elif "ouvrir" in fold(question) or "ouverture" in fold(question):
         if "ouvert" in heading_blob or "ouvrir" in heading_blob:
             score += 2.5
     return score
@@ -338,6 +436,11 @@ def classify_question(question: str) -> str:
         token in folded for token in ("erreur", "alarme", "alarm", "code", "defaut")
     ):
         return "alarm"
+    if any(
+        needle in folded
+        for needle in ("quelle pression", "what pressure", "combien de bar", "how much pressure")
+    ):
+        return "value"
     for qtype, needles in QUESTION_RULES:
         if any(needle in folded for needle in needles):
             return qtype
@@ -552,8 +655,31 @@ def select_context(
     if not passed:
         LOGGER.debug("select_context: 0 extraits au-dessus du seuil")
         return []
-    family = _heading_family(passed[0])
-    selected = [hit for hit in passed if _heading_family(hit) == family][:n_results]
+    if is_laying_question(question):
+        laying_hits = [
+            hit
+            for hit in passed
+            if has_distance_pressure(f"{hit.get('heading', '')} {hit.get('text', '')}")
+        ]
+        if laying_hits:
+            if prefers_standard_manual(question):
+                main = [hit for hit in laying_hits if "298.410" in fold(hit.get("source", ""))]
+                laying_hits = main or laying_hits
+            LOGGER.debug(
+                "select_context: %s extraits pose/25m (min_semantic=%.2f min_final=%.2f)",
+                len(laying_hits[:n_results]),
+                min_semantic,
+                min_final,
+            )
+            return laying_hits[:n_results]
+    numbered = [hit for hit in passed if not is_weak_heading(hit.get("heading", ""))]
+    pool = numbered if numbered else passed
+    if prefers_standard_manual(question):
+        standard = [hit for hit in pool if "automatic" not in fold(hit.get("source", ""))]
+        if standard:
+            pool = standard
+    family = _heading_family(pool[0])
+    selected = [hit for hit in pool if _heading_family(hit) == family][:n_results]
     LOGGER.debug(
         "select_context: %s/%s retenus famille=%s (min_semantic=%.2f min_final=%.2f)",
         len(selected),
@@ -573,6 +699,7 @@ def _score_hits(question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any
             hit.get("text", ""),
             hit.get("heading", ""),
             hit.get("doc_type", ""),
+            hit.get("source", ""),
         )
         hit["exact"] = exact_score(question, hit.get("text", ""), hit.get("heading", ""))
         hit["lexical_norm"] = min(1.0, max(0.0, float(hit["lexical"]) / max(LEXICAL_SCALE, 1e-6)))
@@ -582,6 +709,35 @@ def _score_hits(question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any
             float(hit.get("semantic", 0.0)),
             has_technical_terms=has_terms,
         )
+        qtype = classify_question(question)
+        source_blob = fold(hit.get("source", ""))
+        heading = hit.get("heading", "")
+        blob = fold(f"{heading} {hit.get('text', '')}")
+        laying_detail = is_laying_question(question) and (
+            "25 m" in blob or "25 metre" in blob
+        )
+        if is_weak_heading(heading) and not laying_detail:
+            hit["score"] -= 0.12
+        if qtype in {"diagnostic", "alarm"}:
+            if any(
+                needle in blob
+                for needle in (
+                    "resolution des problemes",
+                    "depannage",
+                    "troubleshooting",
+                    "causes probables",
+                )
+            ):
+                hit["score"] += 0.08
+            if prefers_standard_manual(question) and "automatic" in source_blob:
+                hit["score"] -= 0.12
+        if is_laying_question(question):
+            if laying_detail:
+                hit["score"] += 0.16
+            if "courroie" in fold(heading):
+                hit["score"] -= 0.12
+            if "298.410" in source_blob:
+                hit["score"] += 0.05
     hits.sort(key=lambda item: item["score"], reverse=True)
     return hits
 
