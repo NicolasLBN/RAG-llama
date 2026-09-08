@@ -207,10 +207,10 @@ docker stats
 | `Dockerfile` | Image embeddings.cpp |
 | `config.json` | Paramètres ajustables |
 | `synonyms.json` | Synonymes |
-| `ingest.py` | Indexation des PDF |
+| `ingest.py` | Indexation des PDF — [FR](docs/moteur.md) / [EN](docs/engine.md) |
 | `ask.py` | Question opérateur |
-| `rag.py` | Embeddings / Chroma / chat |
-| `evaluate.py` | Recall@k |
+| `rag.py` | Embeddings / Chroma / chat — [FR](docs/moteur.md) / [EN](docs/engine.md) |
+| `evaluate.py` | Recall@k — [FR](docs/moteur.md) / [EN](docs/engine.md) |
 | `evaluation.json` | Jeu de test |
 | `models/` | Fichiers GGUF |
 | `pdf/` | Manuels OPTIJET |
